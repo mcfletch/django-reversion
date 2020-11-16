@@ -1,5 +1,3 @@
-from __future__ import unicode_literals
-import json
 from contextlib import contextmanager
 from django.db import models, transaction, connection
 from django.conf.urls import url
@@ -64,25 +62,18 @@ class VersionAdmin(admin.ModelAdmin):
 
     # Messages.
 
-    def log_addition(self, request, object, change_message=None):
-        change_message = change_message or _("Initial version.")
+    def log_addition(self, request, object, message):
+        change_message = message or _("Initial version.")
+        entry = super().log_addition(request, object, change_message)
         if is_active():
-            # If https://code.djangoproject.com/ticket/27218 is implemented, we
-            # could first call super() and get the change_message from the returned
-            # LogEntry.
-            if isinstance(change_message, list):
-                set_comment(json.dumps(change_message))
-            else:
-                set_comment(change_message)
-        super(VersionAdmin, self).log_addition(request, object, change_message)
+            set_comment(entry.get_change_message())
+        return entry
 
     def log_change(self, request, object, message):
+        entry = super().log_change(request, object, message)
         if is_active():
-            if isinstance(message, list):
-                set_comment(json.dumps(message))
-            else:
-                set_comment(message)
-        super(VersionAdmin, self).log_change(request, object, message)
+            set_comment(entry.get_change_message())
+        return entry
 
     # Auto-registration.
 
@@ -128,7 +119,7 @@ class VersionAdmin(admin.ModelAdmin):
         return inline_model, follow_field
 
     def __init__(self, *args, **kwargs):
-        super(VersionAdmin, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         # Automatically register models if required.
         if not is_registered(self.model):
             inline_fields = ()
@@ -141,14 +132,14 @@ class VersionAdmin(admin.ModelAdmin):
             self._reversion_autoregister(self.model, inline_fields)
 
     def get_urls(self):
-        urls = super(VersionAdmin, self).get_urls()
+        urls = super().get_urls()
         admin_site = self.admin_site
         opts = self.model._meta
         info = opts.app_label, opts.model_name,
         reversion_urls = [
-            url("^recover/$", admin_site.admin_view(self.recoverlist_view), name='%s_%s_recoverlist' % info),
-            url("^recover/(\d+)/$", admin_site.admin_view(self.recover_view), name='%s_%s_recover' % info),
-            url("^([^/]+)/history/(\d+)/$", admin_site.admin_view(self.revision_view), name='%s_%s_revision' % info),
+            url(r"^recover/$", admin_site.admin_view(self.recoverlist_view), name='%s_%s_recoverlist' % info),
+            url(r"^recover/(\d+)/$", admin_site.admin_view(self.recover_view), name='%s_%s_recover' % info),
+            url(r"^([^/]+)/history/(\d+)/$", admin_site.admin_view(self.revision_view), name='%s_%s_revision' % info),
         ]
         return reversion_urls + urls
 
@@ -156,11 +147,11 @@ class VersionAdmin(admin.ModelAdmin):
 
     def add_view(self, request, form_url='', extra_context=None):
         with self.create_revision(request):
-            return super(VersionAdmin, self).add_view(request, form_url, extra_context)
+            return super().add_view(request, form_url, extra_context)
 
     def change_view(self, request, object_id, form_url='', extra_context=None):
         with self.create_revision(request):
-            return super(VersionAdmin, self).change_view(request, object_id, form_url, extra_context)
+            return super().change_view(request, object_id, form_url, extra_context)
 
     def _reversion_revisionform_view(self, request, version, template_name, extra_context=None):
         # Check that database transactions are supported.
@@ -233,7 +224,7 @@ class VersionAdmin(admin.ModelAdmin):
                 "has_change_permission": self.has_change_permission(request),
             }
             context.update(extra_context or {})
-            return super(VersionAdmin, self).changelist_view(request, context)
+            return super().changelist_view(request, context)
 
     def recoverlist_view(self, request, extra_context=None):
         """Displays a deleted model to allow recovery."""
@@ -263,9 +254,14 @@ class VersionAdmin(admin.ModelAdmin):
 
     def history_view(self, request, object_id, extra_context=None):
         """Renders the history view."""
-        # Check if user has change permissions for model
-        if not self.has_change_permission(request):
-            raise PermissionDenied
+        # Check if user has view or change permissions for model
+        if hasattr(self, 'has_view_or_change_permission'):  # for Django >= 2.1
+            if not self.has_view_or_change_permission(request):
+                raise PermissionDenied
+        else:
+            if not self.has_change_permission(request):
+                raise PermissionDenied
+
         opts = self.model._meta
         action_list = [
             {
@@ -284,4 +280,4 @@ class VersionAdmin(admin.ModelAdmin):
         # Compile the context.
         context = {"action_list": action_list}
         context.update(extra_context or {})
-        return super(VersionAdmin, self).history_view(request, object_id, context)
+        return super().history_view(request, object_id, context)

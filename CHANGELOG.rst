@@ -3,6 +3,43 @@
 django-reversion changelog
 ==========================
 
+3.0.5 - 02/12/2019
+
+- Improved performance of `get_deleted` for large datasets (@jeremy-engel).
+- Django 3.0 compatibility (@claudep).
+- Drops Django <= 1.11 compatibility (@claudep).
+- Fixed errors in manageement commands when `django.contrib.admin` is not in `INSTALLED_APPS` (@irtimir).
+
+
+3.0.4 - 22/05/2019
+------------------
+
+- Remove `django.contrib.admin` dependency from django-reversion (Aitor Ruano).
+- README refactor (@rhenter).
+- Testing against Django 2.2 (@claudep).
+
+
+3.0.3 - 24/01/2019
+------------------
+
+- Improved performance of many reversion database queries using `EXISTS` subquery (@MRigal).
+- Added support for Django 2.1 `view` permission (@ofw).
+
+
+3.0.2 - 05/11/2018
+------------------
+
+- Removed squashed migrations, as they subtly messed up the Django migrations framework (@etianen).
+
+
+3.0.1 - 23/10/2018
+------------------
+
+- Added squashed migrations back in to allow older installations to upgrade (Christopher Thorne).
+- Fixed TypeError exception when accessing m2m_data attribute from a field that points to Django’s User model
+  (@denisroldan).
+
+
 3.0.0 - 19/07/2018
 ------------------
 

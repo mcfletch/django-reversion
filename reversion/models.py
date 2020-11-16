@@ -1,21 +1,24 @@
-from __future__ import unicode_literals
 from collections import defaultdict
 from itertools import chain, groupby
+
+from django.apps import apps
+from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
-from django.conf import settings
-from django.contrib.admin.models import LogEntry
 from django.core import serializers
-from django.core.serializers.base import DeserializationError
 from django.core.exceptions import ObjectDoesNotExist
-from django.db import models, IntegrityError, transaction, router, connections
+from django.core.serializers.base import DeserializationError
+from django.db import IntegrityError, connections, models, router, transaction
 from django.db.models.deletion import Collector
-from django.db.models.expressions import RawSQL
+from django.db.models.functions import Cast
+from django.utils.encoding import force_text
 from django.utils.functional import cached_property
-from django.utils.translation import ugettext_lazy as _, ugettext
-from django.utils.encoding import force_text, python_2_unicode_compatible
+from django.utils.translation import ugettext
+from django.utils.translation import ugettext_lazy as _
+
 from reversion.errors import RevertError
-from reversion.revisions import _get_options, _get_content_type, _follow_relations_recursive
+from reversion.revisions import (_follow_relations_recursive,
+                                 _get_content_type, _get_options)
 
 
 def _safe_revert(versions):
@@ -34,7 +37,6 @@ def _safe_revert(versions):
         _safe_revert(unreverted_versions)
 
 
-@python_2_unicode_compatible
 class Revision(models.Model):
 
     """A group of related serialized versions."""
@@ -61,7 +63,11 @@ class Revision(models.Model):
     )
 
     def get_comment(self):
-        return LogEntry(change_message=self.comment).get_change_message()
+        try:
+            LogEntry = apps.get_model('admin.LogEntry')
+            return LogEntry(change_message=self.comment).get_change_message()
+        except LookupError:
+            return self.comment
 
     def revert(self, delete=False):
         # Group the models by the database of the serialized model.
@@ -105,12 +111,6 @@ class Revision(models.Model):
         ordering = ("-pk",)
 
 
-class SubquerySQL(RawSQL):
-
-    def as_sql(self, compiler, connection):
-        return self.sql, self.params
-
-
 class VersionQuerySet(models.QuerySet):
 
     def get_for_model(self, model, model_db=None):
@@ -130,33 +130,22 @@ class VersionQuerySet(models.QuerySet):
         return self.get_for_object_reference(obj.__class__, obj.pk, model_db=model_db)
 
     def get_deleted(self, model, model_db=None):
-        # Try to do a faster JOIN.
         model_db = model_db or router.db_for_write(model)
         connection = connections[self.db]
         if self.db == model_db and connection.vendor in ("sqlite", "postgresql", "oracle"):
-            content_type = _get_content_type(model, self.db)
-            subquery = SubquerySQL(
-                """
-                SELECT MAX(V.{id})
-                FROM {version} V
-                LEFT JOIN {model} ON V.{object_id} = CAST({model}.{model_id} as {str})
-                WHERE
-                    V.{db} = %s AND
-                    V.{content_type_id} = %s AND
-                    {model}.{model_id} IS NULL
-                GROUP BY V.{object_id}
-                """.format(
-                    id=connection.ops.quote_name("id"),
-                    version=connection.ops.quote_name(Version._meta.db_table),
-                    model=connection.ops.quote_name(model._meta.db_table),
-                    model_id=connection.ops.quote_name(model._meta.pk.db_column or model._meta.pk.attname),
-                    object_id=connection.ops.quote_name("object_id"),
-                    str=Version._meta.get_field("object_id").db_type(connection),
-                    db=connection.ops.quote_name("db"),
-                    content_type_id=connection.ops.quote_name("content_type_id"),
-                ),
-                (model_db, content_type.id),
-                output_field=Version._meta.pk,
+            model_qs = (
+                model._default_manager
+                .using(model_db)
+                .annotate(_pk_to_object_id=Cast("pk", Version._meta.get_field("object_id")))
+                .filter(_pk_to_object_id=models.OuterRef("object_id"))
+            )
+            subquery = (
+                self.get_for_model(model, model_db=model_db)
+                .annotate(pk_not_exists=~models.Exists(model_qs))
+                .filter(pk_not_exists=True)
+                .values("object_id")
+                .annotate(latest_pk=models.Max("pk"))
+                .values("latest_pk")
             )
         else:
             # We have to use a slow subquery.
@@ -168,9 +157,7 @@ class VersionQuerySet(models.QuerySet):
                 latest_pk=models.Max("pk")
             ).order_by().values_list("latest_pk", flat=True)
         # Perform the subquery.
-        return self.filter(
-            pk__in=subquery,
-        )
+        return self.filter(pk__in=subquery)
 
     def get_unique(self):
         last_key = None
@@ -181,7 +168,6 @@ class VersionQuerySet(models.QuerySet):
             last_key = key
 
 
-@python_2_unicode_compatible
 class Version(models.Model):
 
     """A saved version of a database model."""
@@ -319,11 +305,11 @@ class _Str(models.Func):
     template = "%(function)s(%(expressions)s as %(db_type)s)"
 
     def __init__(self, expression):
-        super(_Str, self).__init__(expression, output_field=models.TextField())
+        super().__init__(expression, output_field=models.TextField())
 
     def as_sql(self, compiler, connection):
         self.extra["db_type"] = self.output_field.db_type(connection)
-        return super(_Str, self).as_sql(compiler, connection)
+        return super().as_sql(compiler, connection)
 
 
 def _safe_subquery(method, left_query, left_field_name, right_subquery, right_field_name):
@@ -339,7 +325,9 @@ def _safe_subquery(method, left_query, left_field_name, right_subquery, right_fi
             connections[left_query.db].vendor in ("sqlite", "postgresql")
         )
     ):
-        right_subquery = list(right_subquery.iterator())
+        return getattr(left_query, method)(**{
+            "{}__in".format(left_field_name): list(right_subquery.iterator()),
+        })
     else:
         # If the left hand side is not a text field, we need to cast it.
         if not isinstance(left_field, (models.CharField, models.TextField)):
@@ -354,7 +342,9 @@ def _safe_subquery(method, left_query, left_field_name, right_subquery, right_fi
             right_subquery = right_subquery.annotate(**{
                 right_field_name_str: _Str(right_field_name),
             }).values_list(right_field_name_str, flat=True)
-    # All done!
-    return getattr(left_query, method)(**{
-        "{}__in".format(left_field_name): right_subquery,
-    })
+            right_field_name = right_field_name_str
+        # Use Exists if running on the same DB, it is much much faster
+        exist_annotation_name = "{}_annotation_str".format(right_subquery.model._meta.db_table)
+        right_subquery = right_subquery.filter(**{right_field_name: models.OuterRef(left_field_name)})
+        left_query = left_query.annotate(**{exist_annotation_name: models.Exists(right_subquery)})
+        return getattr(left_query, method)(**{exist_annotation_name: True})
