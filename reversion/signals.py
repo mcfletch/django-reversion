@@ -6,5 +6,5 @@ _signal_args = [
     "versions",
 ]
 
-pre_revision_commit = Signal(providing_args=_signal_args)
-post_revision_commit = Signal(providing_args=_signal_args)
+pre_revision_commit = Signal()
+post_revision_commit = Signal()

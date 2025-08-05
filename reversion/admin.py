@@ -12,16 +12,26 @@ from django.urls import reverse
 from django.utils.text import capfirst
 from django.utils.timezone import template_localtime
 from django.utils.translation import ugettext as _
-from django.utils.encoding import force_text
+
+try:
+    from django.utils.encoding import force_str as force_text
+except ImportError:
+    from django.utils.encoding import force_text
 from django.utils.formats import localize
 from reversion.errors import RevertError
 from reversion.models import Version
-from reversion.revisions import is_active, register, is_registered, set_comment, create_revision, set_user
+from reversion.revisions import (
+    is_active,
+    register,
+    is_registered,
+    set_comment,
+    create_revision,
+    set_user,
+)
 from reversion.views import _RollBackRevisionView
 
 
 class VersionAdmin(admin.ModelAdmin):
-
     object_history_template = "reversion/object_history.html"
 
     change_list_template = "reversion/change_list.html"
@@ -49,7 +59,8 @@ class VersionAdmin(admin.ModelAdmin):
     def _reversion_get_template_list(self, template_name):
         opts = self.model._meta
         return (
-            "reversion/%s/%s/%s" % (opts.app_label, opts.object_name.lower(), template_name),
+            "reversion/%s/%s/%s"
+            % (opts.app_label, opts.object_name.lower(), template_name),
             "reversion/%s/%s" % (opts.app_label, template_name),
             "reversion/%s" % template_name,
         )
@@ -94,10 +105,10 @@ class VersionAdmin(admin.ModelAdmin):
             fk_name = inline.ct_fk_field
             for field in self.model._meta.private_fields:
                 if (
-                    isinstance(field, GenericRelation) and
-                    field.remote_field.model == inline_model and
-                    field.object_id_field_name == fk_name and
-                    field.content_type_field_name == ct_field
+                    isinstance(field, GenericRelation)
+                    and field.remote_field.model == inline_model
+                    and field.object_id_field_name == fk_name
+                    and field.content_type_field_name == ct_field
                 ):
                     follow_field = field.name
                     break
@@ -106,13 +117,15 @@ class VersionAdmin(admin.ModelAdmin):
             fk_name = inline.fk_name
             if not fk_name:
                 for field in inline_model._meta.get_fields():
-                    if (
-                        isinstance(field, (models.ForeignKey, models.OneToOneField)) and
-                        issubclass(self.model, field.remote_field.model)
-                    ):
+                    if isinstance(
+                        field, (models.ForeignKey, models.OneToOneField)
+                    ) and issubclass(self.model, field.remote_field.model):
                         fk_name = field.name
                         break
-            if fk_name and not inline_model._meta.get_field(fk_name).remote_field.is_hidden():
+            if (
+                fk_name
+                and not inline_model._meta.get_field(fk_name).remote_field.is_hidden()
+            ):
                 field = inline_model._meta.get_field(fk_name)
                 accessor = field.remote_field.get_accessor_name()
                 follow_field = accessor
@@ -124,7 +137,9 @@ class VersionAdmin(admin.ModelAdmin):
         if not is_registered(self.model):
             inline_fields = ()
             for inline in self.inlines:
-                inline_model, follow_field = self._reversion_introspect_inline_admin(inline)
+                inline_model, follow_field = self._reversion_introspect_inline_admin(
+                    inline
+                )
                 if inline_model:
                     self._reversion_autoregister(inline_model, ())
                 if follow_field:
@@ -135,28 +150,47 @@ class VersionAdmin(admin.ModelAdmin):
         urls = super().get_urls()
         admin_site = self.admin_site
         opts = self.model._meta
-        info = opts.app_label, opts.model_name,
+        info = (
+            opts.app_label,
+            opts.model_name,
+        )
         reversion_urls = [
-            url(r"^recover/$", admin_site.admin_view(self.recoverlist_view), name='%s_%s_recoverlist' % info),
-            url(r"^recover/(\d+)/$", admin_site.admin_view(self.recover_view), name='%s_%s_recover' % info),
-            url(r"^([^/]+)/history/(\d+)/$", admin_site.admin_view(self.revision_view), name='%s_%s_revision' % info),
+            url(
+                r"^recover/$",
+                admin_site.admin_view(self.recoverlist_view),
+                name="%s_%s_recoverlist" % info,
+            ),
+            url(
+                r"^recover/(\d+)/$",
+                admin_site.admin_view(self.recover_view),
+                name="%s_%s_recover" % info,
+            ),
+            url(
+                r"^([^/]+)/history/(\d+)/$",
+                admin_site.admin_view(self.revision_view),
+                name="%s_%s_revision" % info,
+            ),
         ]
         return reversion_urls + urls
 
     # Views.
 
-    def add_view(self, request, form_url='', extra_context=None):
+    def add_view(self, request, form_url="", extra_context=None):
         with self.create_revision(request):
             return super().add_view(request, form_url, extra_context)
 
-    def change_view(self, request, object_id, form_url='', extra_context=None):
+    def change_view(self, request, object_id, form_url="", extra_context=None):
         with self.create_revision(request):
             return super().change_view(request, object_id, form_url, extra_context)
 
-    def _reversion_revisionform_view(self, request, version, template_name, extra_context=None):
+    def _reversion_revisionform_view(
+        self, request, version, template_name, extra_context=None
+    ):
         # Check that database transactions are supported.
         if not connection.features.uses_savepoints:
-            raise ImproperlyConfigured("Cannot use VersionAdmin with a database that does not support savepoints.")
+            raise ImproperlyConfigured(
+                "Cannot use VersionAdmin with a database that does not support savepoints."
+            )
         # Run the view.
         try:
             with transaction.atomic(using=version.db):
@@ -164,20 +198,33 @@ class VersionAdmin(admin.ModelAdmin):
                 version.revision.revert(delete=True)
                 # Run the normal changeform view.
                 with self.create_revision(request):
-                    response = self.changeform_view(request, quote(version.object_id), request.path, extra_context)
+                    response = self.changeform_view(
+                        request, quote(version.object_id), request.path, extra_context
+                    )
                     # Decide on whether the keep the changes.
                     if request.method == "POST" and response.status_code == 302:
-                        set_comment(_("Reverted to previous version, saved on %(datetime)s") % {
-                            "datetime": localize(template_localtime(version.revision.date_created)),
-                        })
+                        set_comment(
+                            _("Reverted to previous version, saved on %(datetime)s")
+                            % {
+                                "datetime": localize(
+                                    template_localtime(version.revision.date_created)
+                                ),
+                            }
+                        )
                     else:
                         response.template_name = template_name  # Set the template name to the correct template.
                         response.render()  # Eagerly render the response, so it's using the latest version.
-                        raise _RollBackRevisionView(response)  # Raise exception to undo the transaction and revision.
+                        raise _RollBackRevisionView(
+                            response
+                        )  # Raise exception to undo the transaction and revision.
         except RevertError as ex:
             opts = self.model._meta
             messages.error(request, force_text(ex))
-            return redirect("{}:{}_{}_changelist".format(self.admin_site.name, opts.app_label, opts.model_name))
+            return redirect(
+                "{}:{}_{}_changelist".format(
+                    self.admin_site.name, opts.app_label, opts.model_name
+                )
+            )
         except _RollBackRevisionView as ex:
             return ex.response
         return response
@@ -198,7 +245,8 @@ class VersionAdmin(admin.ModelAdmin):
         return self._reversion_revisionform_view(
             request,
             version,
-            self.recover_form_template or self._reversion_get_template_list("recover_form.html"),
+            self.recover_form_template
+            or self._reversion_get_template_list("recover_form.html"),
             context,
         )
 
@@ -214,7 +262,8 @@ class VersionAdmin(admin.ModelAdmin):
         return self._reversion_revisionform_view(
             request,
             version,
-            self.revision_form_template or self._reversion_get_template_list("revision_form.html"),
+            self.revision_form_template
+            or self._reversion_get_template_list("revision_form.html"),
             context,
         )
 
@@ -229,11 +278,15 @@ class VersionAdmin(admin.ModelAdmin):
     def recoverlist_view(self, request, extra_context=None):
         """Displays a deleted model to allow recovery."""
         # Check if user has change and add permissions for model
-        if not self.has_change_permission(request) or not self.has_add_permission(request):
+        if not self.has_change_permission(request) or not self.has_add_permission(
+            request
+        ):
             raise PermissionDenied
         model = self.model
         opts = model._meta
-        deleted = self._reversion_order_version_queryset(Version.objects.get_deleted(self.model))
+        deleted = self._reversion_order_version_queryset(
+            Version.objects.get_deleted(self.model)
+        )
         # Set the app name.
         request.current_app = self.admin_site.name
         # Get the rest of the context.
@@ -242,20 +295,22 @@ class VersionAdmin(admin.ModelAdmin):
             opts=opts,
             app_label=opts.app_label,
             module_name=capfirst(opts.verbose_name),
-            title=_("Recover deleted %(name)s") % {"name": force_text(opts.verbose_name_plural)},
+            title=_("Recover deleted %(name)s")
+            % {"name": force_text(opts.verbose_name_plural)},
             deleted=deleted,
         )
         context.update(extra_context or {})
         return render(
             request,
-            self.recover_list_template or self._reversion_get_template_list("recover_list.html"),
+            self.recover_list_template
+            or self._reversion_get_template_list("recover_list.html"),
             context,
         )
 
     def history_view(self, request, object_id, extra_context=None):
         """Renders the history view."""
         # Check if user has view or change permissions for model
-        if hasattr(self, 'has_view_or_change_permission'):  # for Django >= 2.1
+        if hasattr(self, "has_view_or_change_permission"):  # for Django >= 2.1
             if not self.has_view_or_change_permission(request):
                 raise PermissionDenied
         else:
@@ -267,15 +322,19 @@ class VersionAdmin(admin.ModelAdmin):
             {
                 "revision": version.revision,
                 "url": reverse(
-                    "%s:%s_%s_revision" % (self.admin_site.name, opts.app_label, opts.model_name),
-                    args=(quote(version.object_id), version.id)
+                    "%s:%s_%s_revision"
+                    % (self.admin_site.name, opts.app_label, opts.model_name),
+                    args=(quote(version.object_id), version.id),
                 ),
             }
-            for version
-            in self._reversion_order_version_queryset(Version.objects.get_for_object_reference(
-                self.model,
-                unquote(object_id),  # Underscores in primary key get quoted to "_5F"
-            ).select_related("revision__user"))
+            for version in self._reversion_order_version_queryset(
+                Version.objects.get_for_object_reference(
+                    self.model,
+                    unquote(
+                        object_id
+                    ),  # Underscores in primary key get quoted to "_5F"
+                ).select_related("revision__user")
+            )
         ]
         # Compile the context.
         context = {"action_list": action_list}
